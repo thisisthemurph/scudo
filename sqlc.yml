@@ -1,0 +1,10 @@
+version: "2"
+
+sql:
+  - engine: postgresql
+    queries: internal/repository/queries.sql
+    schema: migrations
+    gen:
+      go:
+        package: repository
+        out: internal/repository
