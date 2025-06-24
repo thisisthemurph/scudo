@@ -7,7 +7,26 @@ package repository
 
 import (
 	"context"
+	"time"
+
+	"github.com/google/uuid"
 )
+
+const createRefreshToken = `-- name: CreateRefreshToken :exec
+insert into scudo.refresh_tokens (user_id, hashed_token, expires_at)
+values ($1, $2, $3)
+`
+
+type CreateRefreshTokenParams struct {
+	UserID      uuid.UUID
+	HashedToken string
+	ExpiresAt   time.Time
+}
+
+func (q *Queries) CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) error {
+	_, err := q.db.ExecContext(ctx, createRefreshToken, arg.UserID, arg.HashedToken, arg.ExpiresAt)
+	return err
+}
 
 const createUser = `-- name: CreateUser :one
 insert into scudo.users (email, hashed_password)

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"embed"
 	"errors"
-	"fmt"
 	"github.com/pressly/goose/v3"
 	"github.com/thisisthemurph/scudo/internal/service"
 	"github.com/thisisthemurph/scudo/internal/token"
@@ -19,13 +18,15 @@ var (
 )
 
 type Scudo struct {
-	options     Options
-	userService *service.UserService
+	options             Options
+	userService         *service.UserService
+	refreshTokenService *service.RefreshTokenService
 }
 
 type Options struct {
 	AccessTokenTTL    time.Duration
 	AccessTokenSecret string
+	RefreshTokenTTL   time.Duration
 }
 
 //go:embed migrations/*.sql
@@ -33,8 +34,9 @@ var embeddedMigrations embed.FS
 
 func New(db *sql.DB, options Options) (*Scudo, error) {
 	s := &Scudo{
-		options:     options,
-		userService: service.NewUserService(db),
+		options:             options,
+		userService:         service.NewUserService(db),
+		refreshTokenService: service.NewRefreshTokenService(db, options.RefreshTokenTTL),
 	}
 
 	if err := db.Ping(); err != nil {
@@ -87,14 +89,10 @@ func (s *Scudo) SignIn(ctx context.Context, email, password string) (*SignInResp
 		return nil, err
 	}
 
-	refreshToken := token.GenerateRefreshToken()
-	hashedRefreshToken, err := token.HashRefreshToken(refreshToken)
+	refreshToken, err := s.refreshTokenService.RegisterRefreshToken(ctx, user.ID)
 	if err != nil {
 		return nil, err
 	}
-
-	// TODO: Persist
-	fmt.Println(hashedRefreshToken)
 
 	return &SignInResponse{
 		User:         NewUserDTO(user),

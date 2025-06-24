@@ -10,6 +10,16 @@ import (
 	"github.com/google/uuid"
 )
 
+type ScudoRefreshToken struct {
+	ID          int32
+	UserID      uuid.UUID
+	HashedToken string
+	ExpiresAt   time.Time
+	Revoked     bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 type ScudoUser struct {
 	ID             uuid.UUID
 	Email          string
