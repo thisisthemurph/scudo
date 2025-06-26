@@ -13,8 +13,8 @@ import (
 )
 
 var (
-	ErrUserNotFound       = errors.New("user not found")
 	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrUserAlreadyExists  = errors.New("user already exists")
 )
 
 type Scudo struct {
@@ -57,6 +57,9 @@ type SignUpResponse struct {
 func (s *Scudo) SignUp(ctx context.Context, email, password string) (*SignUpResponse, error) {
 	user, err := s.userService.CreateUser(ctx, email, password)
 	if err != nil {
+		if errors.Is(err, service.ErrUserAlreadyExists) {
+			return nil, ErrUserAlreadyExists
+		}
 		return nil, err
 	}
 
@@ -75,7 +78,7 @@ func (s *Scudo) SignIn(ctx context.Context, email, password string) (*SignInResp
 	user, err := s.userService.GetUserByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, service.ErrUserNotFound) {
-			return nil, ErrUserNotFound
+			return nil, ErrInvalidCredentials
 		}
 		return nil, err
 	}

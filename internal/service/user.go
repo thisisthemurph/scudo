@@ -24,7 +24,14 @@ func NewUserService(db *sql.DB) *UserService {
 }
 
 func (s *UserService) GetUserByEmail(ctx context.Context, email string) (repository.ScudoUser, error) {
-	return s.GetUserByEmail(ctx, email)
+	user, err := s.queries.GetUserByEmail(ctx, email)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return repository.ScudoUser{}, ErrUserNotFound
+		}
+		return repository.ScudoUser{}, err
+	}
+	return user, nil
 }
 
 func (s *UserService) CreateUser(ctx context.Context, email, password string) (repository.ScudoUser, error) {

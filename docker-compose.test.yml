@@ -1,0 +1,17 @@
+services:
+  db:
+    image: postgres:latest
+    container_name: scudo-postgres-test
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: scudo-test
+    ports:
+      - "5432:5432"
+    volumes:
+      - scudo-data-test:/var/lib/postgresql/data
+
+volumes:
+  scudo-data-test:
+    name: scudo-data-test
