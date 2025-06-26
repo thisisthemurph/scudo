@@ -29,7 +29,6 @@ func testDatabase(t *testing.T) *sql.DB {
 		_ = db.Close()
 	})
 
-	resetDatabase(t, db)
 	return db
 }
 
@@ -52,6 +51,8 @@ func newTestScudo(t *testing.T, db *sql.DB) *Scudo {
 		RefreshTokenTTL:   refreshTokenTTL,
 	})
 	require.NoError(t, err)
+
+	resetDatabase(t, db)
 	return s
 }
 
