@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/thisisthemurph/scudo/internal/repository"
 	"golang.org/x/crypto/bcrypt"
+	"os"
 	"testing"
 	"time"
 
@@ -17,10 +19,18 @@ import (
 const accessTokenTTL = time.Minute
 const accessTokenSecret = "test-secret"
 const refreshTokenTTL = time.Hour
-const connectionString = "postgres://postgres:postgres@localhost:5432/scudo-test?sslmode=disable"
+
+func init() {
+	_ = godotenv.Load(".env.test")
+}
 
 func testDatabase(t *testing.T) *sql.DB {
 	t.Helper()
+
+	connectionString := os.Getenv("DATABASE_URL")
+	if connectionString == "" {
+		t.Fatal("DATABASE_URL environment variable is not set")
+	}
 
 	db, err := sql.Open("postgres", connectionString)
 	require.NoError(t, err)
@@ -29,7 +39,6 @@ func testDatabase(t *testing.T) *sql.DB {
 		_ = db.Close()
 	})
 
-	resetDatabase(t, db)
 	return db
 }
 
@@ -52,6 +61,8 @@ func newTestScudo(t *testing.T, db *sql.DB) *Scudo {
 		RefreshTokenTTL:   refreshTokenTTL,
 	})
 	require.NoError(t, err)
+
+	resetDatabase(t, db)
 	return s
 }
 
