@@ -21,10 +21,7 @@ const accessTokenSecret = "test-secret"
 const refreshTokenTTL = time.Hour
 
 func init() {
-	err := godotenv.Load(".env.test")
-	if err != nil {
-		panic(err)
-	}
+	_ = godotenv.Load(".env.test")
 }
 
 func testDatabase(t *testing.T) *sql.DB {
