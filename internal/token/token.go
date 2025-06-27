@@ -10,11 +10,14 @@ import (
 )
 
 func GenerateJWT(u repository.ScudoUser, ttl time.Duration, secret string) (string, error) {
+	now := time.Now()
 	claims := jwt.MapClaims{
 		"sub":   u.ID.String(),
 		"email": u.Email,
-		"exp":   time.Now().Add(ttl).Unix(),
+		"iat":   now.Unix(),
+		"exp":   now.Add(ttl).Unix(),
 	}
+
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(secret))
 }
