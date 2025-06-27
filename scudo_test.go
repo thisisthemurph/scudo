@@ -78,7 +78,7 @@ func TestSignUp_CreatesUser(t *testing.T) {
 	email := uniqueEmail()
 	password := "securepassword123"
 
-	response, err := sut.SignUp(context.Background(), email, password)
+	response, err := sut.Auth.SignUp(context.Background(), email, password)
 	require.NoError(t, err)
 	require.NotNil(t, response)
 	require.NotNil(t, response.User)
@@ -96,10 +96,10 @@ func TestSignUp_ReturnsError_WhenEmailAlreadyExists(t *testing.T) {
 	email := uniqueEmail()
 	password := "securepassword123"
 
-	_, err := sut.SignUp(context.Background(), email, password)
+	_, err := sut.Auth.SignUp(context.Background(), email, password)
 	require.NoError(t, err)
 
-	_, err = sut.SignUp(context.Background(), email, password)
+	_, err = sut.Auth.SignUp(context.Background(), email, password)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUserAlreadyExists)
 }
@@ -111,7 +111,7 @@ func TestSignIn_ReturnsError_WhenEmailNotFound(t *testing.T) {
 	email := uniqueEmail()
 	password := "securepassword123"
 
-	_, err := sut.SignIn(context.Background(), email, password)
+	_, err := sut.Auth.SignIn(context.Background(), email, password)
 	require.ErrorIs(t, err, ErrInvalidCredentials)
 }
 
@@ -122,10 +122,10 @@ func TestSignIn_ReturnsError_WhenPasswordIncorrect(t *testing.T) {
 	email := uniqueEmail()
 	password := "securepassword123"
 
-	_, err := sut.SignUp(context.Background(), email, password)
+	_, err := sut.Auth.SignUp(context.Background(), email, password)
 	require.NoError(t, err)
 
-	_, err = sut.SignIn(context.Background(), email, "incorrect-password")
+	_, err = sut.Auth.SignIn(context.Background(), email, "incorrect-password")
 	require.ErrorIs(t, err, ErrInvalidCredentials)
 }
 
@@ -136,10 +136,10 @@ func TestSignIn_ReturnsSignInResponse_WhenDetailsCorrect(t *testing.T) {
 	email := uniqueEmail()
 	password := "securepassword123"
 
-	_, err := sut.SignUp(context.Background(), email, password)
+	_, err := sut.Auth.SignUp(context.Background(), email, password)
 	require.NoError(t, err)
 
-	r, err := sut.SignIn(context.Background(), email, password)
+	r, err := sut.Auth.SignIn(context.Background(), email, password)
 	require.NoError(t, err)
 
 	assert.NotNil(t, r)
@@ -157,10 +157,10 @@ func TestSignIn_PersistsRefreshToken_WhenDetailsCorrect(t *testing.T) {
 	email := uniqueEmail()
 	password := "securepassword123"
 
-	_, err := sut.SignUp(context.Background(), email, password)
+	_, err := sut.Auth.SignUp(context.Background(), email, password)
 	require.NoError(t, err)
 
-	r, err := sut.SignIn(context.Background(), email, password)
+	r, err := sut.Auth.SignIn(context.Background(), email, password)
 	require.NoError(t, err)
 
 	assert.NotNil(t, r)
