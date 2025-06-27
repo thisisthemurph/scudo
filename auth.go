@@ -2,7 +2,9 @@ package scudo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/thisisthemurph/scudo/internal/service"
 	"github.com/thisisthemurph/scudo/internal/token"
 	"golang.org/x/crypto/bcrypt"
@@ -26,8 +28,27 @@ type SignUpResponse struct {
 	User User `json:"user"`
 }
 
-func (a *auth) SignUp(ctx context.Context, email, password string) (*SignUpResponse, error) {
-	user, err := a.userService.CreateUser(ctx, email, password)
+type SignUpOptions struct {
+	Data any
+}
+
+func (a *auth) SignUp(ctx context.Context, email, password string, options *SignUpOptions) (*SignUpResponse, error) {
+	var err error
+	var jsonData []byte
+
+	if options == nil {
+		options = &SignUpOptions{}
+	}
+	if options.Data == nil {
+		options.Data = make(map[string]any)
+	}
+
+	jsonData, err = json.Marshal(options.Data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal sign-up data: %w", err)
+	}
+
+	user, err := a.userService.CreateUser(ctx, email, password, jsonData)
 	if err != nil {
 		if errors.Is(err, service.ErrUserAlreadyExists) {
 			return nil, ErrUserAlreadyExists

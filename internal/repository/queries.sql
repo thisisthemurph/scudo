@@ -5,8 +5,8 @@ select exists (select 1 from scudo.users where email = $1);
 select * from scudo.users where email = $1 limit 1;
 
 -- name: CreateUser :one
-insert into scudo.users (email, hashed_password)
-values ($1, $2)
+insert into scudo.users (email, hashed_password, metadata)
+values ($1, $2, $3)
 returning *;
 
 -- name: CreateRefreshToken :exec

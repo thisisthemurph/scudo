@@ -7,6 +7,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,23 +30,25 @@ func (q *Queries) CreateRefreshToken(ctx context.Context, arg CreateRefreshToken
 }
 
 const createUser = `-- name: CreateUser :one
-insert into scudo.users (email, hashed_password)
-values ($1, $2)
-returning id, email, hashed_password, created_at, updated_at
+insert into scudo.users (email, hashed_password, metadata)
+values ($1, $2, $3)
+returning id, email, hashed_password, metadata, created_at, updated_at
 `
 
 type CreateUserParams struct {
 	Email          string
 	HashedPassword string
+	Metadata       json.RawMessage
 }
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (ScudoUser, error) {
-	row := q.db.QueryRowContext(ctx, createUser, arg.Email, arg.HashedPassword)
+	row := q.db.QueryRowContext(ctx, createUser, arg.Email, arg.HashedPassword, arg.Metadata)
 	var i ScudoUser
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
 		&i.HashedPassword,
+		&i.Metadata,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -53,7 +56,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (ScudoUs
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-select id, email, hashed_password, created_at, updated_at from scudo.users where email = $1 limit 1
+select id, email, hashed_password, metadata, created_at, updated_at from scudo.users where email = $1 limit 1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (ScudoUser, error) {
@@ -63,6 +66,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (ScudoUser, 
 		&i.ID,
 		&i.Email,
 		&i.HashedPassword,
+		&i.Metadata,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

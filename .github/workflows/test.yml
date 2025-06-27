@@ -26,7 +26,7 @@ jobs:
 
     env:
       # match your connection string in test
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/scudo-test?sslmode=disable
+      DATABASE_URL: postgres://postgres:postgres@localhost:55432/scudo-test?sslmode=disable
 
     steps:
       - uses: actions/checkout@v4

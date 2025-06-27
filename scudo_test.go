@@ -3,7 +3,9 @@ package scudo
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,12 +21,13 @@ import (
 const accessTokenTTL = time.Minute
 const accessTokenSecret = "test-secret"
 const refreshTokenTTL = time.Hour
+const defaultPassword = "secure_password_123"
 
 func init() {
 	_ = godotenv.Load(".env.test")
 }
 
-func testDatabase(t *testing.T) *sql.DB {
+func createTestDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 
 	connectionString := os.Getenv("DATABASE_URL")
@@ -72,13 +75,11 @@ func uniqueEmail() string {
 
 func TestSignUp_CreatesUser(t *testing.T) {
 	start := time.Now()
-	db := testDatabase(t)
+	db := createTestDatabase(t)
 	sut := newTestScudo(t, db)
 
 	email := uniqueEmail()
-	password := "securepassword123"
-
-	response, err := sut.Auth.SignUp(context.Background(), email, password)
+	response, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
 	require.NoError(t, err)
 	require.NotNil(t, response)
 	require.NotNil(t, response.User)
@@ -87,42 +88,185 @@ func TestSignUp_CreatesUser(t *testing.T) {
 	assert.NotEmpty(t, response.User.ID)
 	assert.True(t, response.User.CreatedAt.After(start))
 	assert.Equal(t, response.User.CreatedAt, response.User.UpdatedAt)
+
+	// If no metadata has been passed into the signup method, the resulting user metadata should be an empty map.
+	assert.IsType(t, make(map[string]any), response.User.MetadataMap)
+	assert.Empty(t, response.User.MetadataMap)
+	assert.Equal(t, "{}", string(response.User.Metadata))
+}
+
+func TestSignUp_PersistsUserMetadata(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	type userMetadata struct {
+		Name string `json:"name"`
+		Age  int    `json:"age"`
+	}
+
+	type nestedUserMetadata struct {
+		Inner userMetadata `json:"inner"`
+		Port  string       `json:"p"`
+	}
+
+	testCases := []struct {
+		name       string
+		data       any
+		expected   map[string]any
+		testStruct func(t *testing.T, data json.RawMessage)
+	}{
+		{
+			name: "with generic map",
+			data: map[string]any{
+				"name": "Bob",
+				"age":  36,
+			},
+			expected: map[string]any{
+				"name": "Bob",
+				"age":  float64(36), // Go doesn't know what this should be, so uses float64
+			},
+		},
+		{
+			name: "with strict map",
+			data: map[string]string{
+				"name": "Bob",
+				"age":  "36",
+			},
+			expected: map[string]any{
+				"name": "Bob",
+				"age":  "36",
+			},
+		},
+		{
+			name: "with nested map",
+			data: map[string]any{
+				"id": 1,
+				"user": map[string]any{
+					"name": "Bob",
+					"age":  36,
+				},
+				"scores": []int{1, 2, 3},
+			},
+			expected: map[string]any{
+				"id": float64(1),
+				"user": map[string]any{
+					"name": "Bob",
+					"age":  float64(36),
+				},
+				"scores": []interface{}{float64(1), float64(2), float64(3)},
+			},
+		},
+		{
+			name: "with struct data",
+			data: userMetadata{
+				Name: "Bob",
+				Age:  36,
+			},
+			expected: map[string]any{
+				"name": "Bob",
+				"age":  float64(36),
+			},
+			testStruct: func(t *testing.T, data json.RawMessage) {
+				var x userMetadata
+				err := json.Unmarshal(data, &x)
+				require.NoError(t, err)
+				assert.Equal(t, "Bob", x.Name)
+				assert.Equal(t, 36, x.Age)
+			},
+		},
+		{
+			name: "with struct data",
+			data: userMetadata{
+				Name: "Bob",
+				Age:  36,
+			},
+			expected: map[string]any{
+				"name": "Bob",
+				"age":  float64(36),
+			},
+			testStruct: func(t *testing.T, data json.RawMessage) {
+				var x userMetadata
+				err := json.Unmarshal(data, &x)
+				require.NoError(t, err)
+				assert.Equal(t, "Bob", x.Name)
+				assert.Equal(t, 36, x.Age)
+			},
+		},
+		{
+			name: "with nested struct data",
+			data: nestedUserMetadata{
+				Inner: userMetadata{
+					Name: "Bob",
+					Age:  36,
+				},
+				Port: "3000",
+			},
+			expected: map[string]any{
+				"inner": map[string]any{
+					"name": "Bob",
+					"age":  float64(36),
+				},
+				"p": "3000",
+			},
+			testStruct: func(t *testing.T, data json.RawMessage) {
+				var x nestedUserMetadata
+				err := json.Unmarshal(data, &x)
+				require.NoError(t, err)
+				assert.Equal(t, "Bob", x.Inner.Name)
+				assert.Equal(t, 36, x.Inner.Age)
+				assert.Equal(t, "3000", x.Port)
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			email := uniqueEmail()
+			options := &SignUpOptions{
+				Data: tc.data,
+			}
+			response, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, options)
+			require.NoError(t, err)
+			require.NotNil(t, response)
+			require.NotNil(t, response.User)
+
+			assert.IsType(t, make(map[string]any), response.User.MetadataMap)
+			assert.Equal(t, tc.expected, response.User.MetadataMap)
+			if tc.testStruct != nil {
+				tc.testStruct(t, response.User.Metadata)
+			}
+		})
+	}
 }
 
 func TestSignUp_ReturnsError_WhenEmailAlreadyExists(t *testing.T) {
-	db := testDatabase(t)
+	db := createTestDatabase(t)
 	sut := newTestScudo(t, db)
 
 	email := uniqueEmail()
-	password := "securepassword123"
-
-	_, err := sut.Auth.SignUp(context.Background(), email, password)
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
 	require.NoError(t, err)
 
-	_, err = sut.Auth.SignUp(context.Background(), email, password)
+	_, err = sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUserAlreadyExists)
 }
 
 func TestSignIn_ReturnsError_WhenEmailNotFound(t *testing.T) {
-	db := testDatabase(t)
+	db := createTestDatabase(t)
 	sut := newTestScudo(t, db)
 
 	email := uniqueEmail()
-	password := "securepassword123"
-
-	_, err := sut.Auth.SignIn(context.Background(), email, password)
+	_, err := sut.Auth.SignIn(context.Background(), email, defaultPassword)
 	require.ErrorIs(t, err, ErrInvalidCredentials)
 }
 
 func TestSignIn_ReturnsError_WhenPasswordIncorrect(t *testing.T) {
-	db := testDatabase(t)
+	db := createTestDatabase(t)
 	sut := newTestScudo(t, db)
 
 	email := uniqueEmail()
-	password := "securepassword123"
-
-	_, err := sut.Auth.SignUp(context.Background(), email, password)
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
 	require.NoError(t, err)
 
 	_, err = sut.Auth.SignIn(context.Background(), email, "incorrect-password")
@@ -130,16 +274,14 @@ func TestSignIn_ReturnsError_WhenPasswordIncorrect(t *testing.T) {
 }
 
 func TestSignIn_ReturnsSignInResponse_WhenDetailsCorrect(t *testing.T) {
-	db := testDatabase(t)
+	db := createTestDatabase(t)
 	sut := newTestScudo(t, db)
 
 	email := uniqueEmail()
-	password := "securepassword123"
-
-	_, err := sut.Auth.SignUp(context.Background(), email, password)
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
 	require.NoError(t, err)
 
-	r, err := sut.Auth.SignIn(context.Background(), email, password)
+	r, err := sut.Auth.SignIn(context.Background(), email, defaultPassword)
 	require.NoError(t, err)
 
 	assert.NotNil(t, r)
@@ -150,17 +292,43 @@ func TestSignIn_ReturnsSignInResponse_WhenDetailsCorrect(t *testing.T) {
 	assert.Equal(t, email, r.User.Email)
 }
 
-func TestSignIn_PersistsRefreshToken_WhenDetailsCorrect(t *testing.T) {
-	db := testDatabase(t)
+func TestSignIn_HasCorrectJWTAccessToken_WhenDetailsCorrect(t *testing.T) {
+	db := createTestDatabase(t)
 	sut := newTestScudo(t, db)
 
 	email := uniqueEmail()
-	password := "securepassword123"
-
-	_, err := sut.Auth.SignUp(context.Background(), email, password)
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
 	require.NoError(t, err)
 
-	r, err := sut.Auth.SignIn(context.Background(), email, password)
+	r, err := sut.Auth.SignIn(context.Background(), email, defaultPassword)
+	require.NoError(t, err)
+
+	assert.NotNil(t, r)
+	assert.NotEmpty(t, r.AccessToken)
+	token, err := jwt.Parse(r.AccessToken, func(t *jwt.Token) (interface{}, error) {
+		return []byte(accessTokenSecret), nil
+	})
+	require.NoError(t, err)
+	require.NotNil(t, token)
+	require.True(t, token.Valid)
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	require.True(t, ok)
+
+	u := getUserByEmail(t, db, email)
+	assert.Equal(t, email, claims["email"])
+	assert.Equal(t, u.ID.String(), claims["sub"])
+}
+
+func TestSignIn_PersistsRefreshToken_WhenDetailsCorrect(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	email := uniqueEmail()
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
+	require.NoError(t, err)
+
+	r, err := sut.Auth.SignIn(context.Background(), email, defaultPassword)
 	require.NoError(t, err)
 
 	assert.NotNil(t, r)
@@ -175,4 +343,13 @@ func TestSignIn_PersistsRefreshToken_WhenDetailsCorrect(t *testing.T) {
 	err = bcrypt.CompareHashAndPassword([]byte(token.HashedToken), []byte(r.RefreshToken))
 	assert.NoError(t, err, "Expected the hashed refresh token to match")
 	assert.False(t, token.Revoked)
+}
+
+func getUserByEmail(t *testing.T, db *sql.DB, email string) repository.ScudoUser {
+	t.Helper()
+
+	r := repository.New(db)
+	u, err := r.GetUserByEmail(context.Background(), email)
+	require.NoError(t, err)
+	return u
 }

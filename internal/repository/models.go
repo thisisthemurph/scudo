@@ -5,6 +5,7 @@
 package repository
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,6 +25,7 @@ type ScudoUser struct {
 	ID             uuid.UUID
 	Email          string
 	HashedPassword string
+	Metadata       json.RawMessage
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }

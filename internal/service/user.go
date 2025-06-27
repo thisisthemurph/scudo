@@ -34,7 +34,7 @@ func (s *UserService) GetUserByEmail(ctx context.Context, email string) (reposit
 	return user, nil
 }
 
-func (s *UserService) CreateUser(ctx context.Context, email, password string) (repository.ScudoUser, error) {
+func (s *UserService) CreateUser(ctx context.Context, email, password string, userMetadata []byte) (repository.ScudoUser, error) {
 	if userExists, err := s.queries.UserWithEmailExists(ctx, email); err != nil {
 		return repository.ScudoUser{}, err
 	} else if userExists {
@@ -49,5 +49,6 @@ func (s *UserService) CreateUser(ctx context.Context, email, password string) (r
 	return s.queries.CreateUser(ctx, repository.CreateUserParams{
 		Email:          email,
 		HashedPassword: string(hash),
+		Metadata:       userMetadata,
 	})
 }
