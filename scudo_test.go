@@ -95,19 +95,19 @@ func TestSignUp_CreatesUser(t *testing.T) {
 	assert.Equal(t, "{}", string(response.User.Metadata))
 }
 
+type userMetadata struct {
+	Name string `json:"name"`
+	Age  int    `json:"age"`
+}
+
+type nestedUserMetadata struct {
+	Inner userMetadata `json:"inner"`
+	Port  string       `json:"p"`
+}
+
 func TestSignUp_PersistsUserMetadata(t *testing.T) {
 	db := createTestDatabase(t)
 	sut := newTestScudo(t, db)
-
-	type userMetadata struct {
-		Name string `json:"name"`
-		Age  int    `json:"age"`
-	}
-
-	type nestedUserMetadata struct {
-		Inner userMetadata `json:"inner"`
-		Port  string       `json:"p"`
-	}
 
 	testCases := []struct {
 		name       string
@@ -290,6 +290,126 @@ func TestSignIn_ReturnsSignInResponse_WhenDetailsCorrect(t *testing.T) {
 	assert.NotEmpty(t, r.RefreshToken)
 	assert.NotEmpty(t, r.User.ID)
 	assert.Equal(t, email, r.User.Email)
+}
+
+func TestSignIn_IncludesMetadataOnJWTAccessToken_WhenSignedUpWithMetadata(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	testCases := []struct {
+		name     string
+		data     any
+		expected map[string]any
+	}{
+		{
+			name: "with generic map",
+			data: map[string]any{
+				"name": "Bob",
+				"age":  36,
+			},
+			expected: map[string]any{
+				"name": "Bob",
+				"age":  float64(36), // Go doesn't know what this should be, so uses float64
+			},
+		},
+		{
+			name: "with strict map",
+			data: map[string]string{
+				"name": "Bob",
+				"age":  "36",
+			},
+			expected: map[string]any{
+				"name": "Bob",
+				"age":  "36",
+			},
+		},
+		{
+			name: "with nested map",
+			data: map[string]any{
+				"id": 1,
+				"user": map[string]any{
+					"name": "Bob",
+					"age":  36,
+				},
+				"scores": []int{1, 2, 3},
+			},
+			expected: map[string]any{
+				"id": float64(1),
+				"user": map[string]any{
+					"name": "Bob",
+					"age":  float64(36),
+				},
+				"scores": []interface{}{float64(1), float64(2), float64(3)},
+			},
+		},
+		{
+			name: "with struct data",
+			data: userMetadata{
+				Name: "Bob",
+				Age:  36,
+			},
+			expected: map[string]any{
+				"name": "Bob",
+				"age":  float64(36),
+			},
+		},
+		{
+			name: "with struct data",
+			data: userMetadata{
+				Name: "Bob",
+				Age:  36,
+			},
+			expected: map[string]any{
+				"name": "Bob",
+				"age":  float64(36),
+			},
+		},
+		{
+			name: "with nested struct data",
+			data: nestedUserMetadata{
+				Inner: userMetadata{
+					Name: "Bob",
+					Age:  36,
+				},
+				Port: "3000",
+			},
+			expected: map[string]any{
+				"inner": map[string]any{
+					"name": "Bob",
+					"age":  float64(36),
+				},
+				"p": "3000",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			email := uniqueEmail()
+			_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, &SignUpOptions{
+				Data: tc.data,
+			})
+			require.NoError(t, err)
+			r, err := sut.Auth.SignIn(context.Background(), email, defaultPassword)
+			require.NoError(t, err)
+			require.NotNil(t, r)
+			require.NotEmpty(t, r.AccessToken)
+
+			at, err := jwt.ParseWithClaims(r.AccessToken, jwt.MapClaims{}, func(token *jwt.Token) (interface{}, error) {
+				return []byte(accessTokenSecret), nil
+			})
+			require.NoError(t, err)
+			require.NotNil(t, at)
+			assert.NoError(t, at.Claims.Valid())
+
+			claims := at.Claims.(jwt.MapClaims)
+			assert.NotEmpty(t, claims["sub"])
+			assert.Equal(t, email, claims["email"])
+			assert.NotEmpty(t, claims["iat"])
+			assert.NotEmpty(t, claims["exp"])
+			assert.Equal(t, tc.expected, claims["metadata"])
+		})
+	}
 }
 
 func TestSignIn_HasCorrectJWTAccessToken_WhenDetailsCorrect(t *testing.T) {
