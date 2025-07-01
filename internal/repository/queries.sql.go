@@ -73,6 +73,24 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (ScudoUser, 
 	return i, err
 }
 
+const getUserByID = `-- name: GetUserByID :one
+select id, email, hashed_password, metadata, created_at, updated_at from scudo.users where id = $1 limit 1
+`
+
+func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (ScudoUser, error) {
+	row := q.db.QueryRowContext(ctx, getUserByID, id)
+	var i ScudoUser
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.HashedPassword,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const userWithEmailExists = `-- name: UserWithEmailExists :one
 select exists (select 1 from scudo.users where email = $1)
 `

@@ -17,6 +17,7 @@ var (
 type Scudo struct {
 	options Options
 	Auth    *auth
+	User    *user
 }
 
 type Options struct {
@@ -29,9 +30,13 @@ type Options struct {
 var embeddedMigrations embed.FS
 
 func New(db *sql.DB, options Options) (*Scudo, error) {
+	userService := service.NewUserService(db)
+	refreshTokenService := service.NewRefreshTokenService(db, options.RefreshTokenTTL)
+
 	s := &Scudo{
 		options: options,
-		Auth:    newAuth(service.NewUserService(db), service.NewRefreshTokenService(db, options.RefreshTokenTTL), options),
+		Auth:    newAuth(userService, refreshTokenService, options),
+		User:    newUser(userService, options),
 	}
 
 	if err := db.Ping(); err != nil {

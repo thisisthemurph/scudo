@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/google/uuid"
 	"github.com/thisisthemurph/scudo/internal/repository"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -21,6 +22,17 @@ func NewUserService(db *sql.DB) *UserService {
 	return &UserService{
 		queries: repository.New(db),
 	}
+}
+
+func (s *UserService) GetUserByID(ctx context.Context, id uuid.UUID) (repository.ScudoUser, error) {
+	user, err := s.queries.GetUserByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return repository.ScudoUser{}, ErrUserNotFound
+		}
+		return repository.ScudoUser{}, err
+	}
+	return user, nil
 }
 
 func (s *UserService) GetUserByEmail(ctx context.Context, email string) (repository.ScudoUser, error) {
