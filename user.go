@@ -12,11 +12,11 @@ var (
 )
 
 type user struct {
-	options     Options
+	options     *Options
 	userService *service.UserService
 }
 
-func newUser(us *service.UserService, options Options) *user {
+func newUser(us *service.UserService, options *Options) *user {
 	return &user{
 		options:     options,
 		userService: us,

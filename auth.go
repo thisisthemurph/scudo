@@ -8,15 +8,22 @@ import (
 	"github.com/thisisthemurph/scudo/internal/service"
 	"github.com/thisisthemurph/scudo/internal/token"
 	"golang.org/x/crypto/bcrypt"
+	"net/http"
+	"time"
+)
+
+const (
+	AccessTokenCookieKey  = "scudo-access-token"
+	RefreshTokenCookieKey = "scudo-refresh-token"
 )
 
 type auth struct {
-	options             Options
+	options             *Options
 	userService         *service.UserService
 	refreshTokenService *service.RefreshTokenService
 }
 
-func newAuth(us *service.UserService, rts *service.RefreshTokenService, options Options) *auth {
+func newAuth(us *service.UserService, rts *service.RefreshTokenService, options *Options) *auth {
 	return &auth{
 		options:             options,
 		userService:         us,
@@ -67,7 +74,7 @@ type SignInResponse struct {
 	RefreshToken string `json:"refreshToken"`
 }
 
-func (a *auth) SignIn(ctx context.Context, email, password string) (*SignInResponse, error) {
+func (a *auth) SignIn(ctx context.Context, w http.ResponseWriter, email, password string) (*SignInResponse, error) {
 	user, err := a.userService.GetUserByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, service.ErrUserNotFound) {
@@ -89,6 +96,26 @@ func (a *auth) SignIn(ctx context.Context, email, password string) (*SignInRespo
 	if err != nil {
 		return nil, err
 	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     AccessTokenCookieKey,
+		Value:    accessToken,
+		Path:     a.options.CookieOptions.Path,
+		Expires:  time.Now().Add(a.options.AccessTokenTTL),
+		HttpOnly: true,
+		Secure:   a.options.CookieOptions.Secure,
+		SameSite: a.options.CookieOptions.SameSite,
+	})
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     RefreshTokenCookieKey,
+		Value:    refreshToken,
+		Path:     a.options.CookieOptions.Path,
+		Expires:  time.Now().Add(a.options.RefreshTokenTTL),
+		HttpOnly: true,
+		Secure:   a.options.CookieOptions.Secure,
+		SameSite: a.options.CookieOptions.SameSite,
+	})
 
 	return &SignInResponse{
 		User:         NewUserDTO(user),

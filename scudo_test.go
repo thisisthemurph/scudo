@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/thisisthemurph/scudo/internal/repository"
 	"golang.org/x/crypto/bcrypt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -18,10 +20,12 @@ import (
 	_ "github.com/lib/pq"
 )
 
-const accessTokenTTL = time.Minute
-const accessTokenSecret = "test-secret"
-const refreshTokenTTL = time.Hour
-const defaultPassword = "secure_password_123"
+const (
+	accessTokenTTL    = time.Minute
+	accessTokenSecret = "test-secret"
+	refreshTokenTTL   = time.Hour
+	defaultPassword   = "secure_password_123"
+)
 
 func init() {
 	_ = godotenv.Load(".env.test")
@@ -58,7 +62,7 @@ func resetDatabase(t *testing.T, db *sql.DB) {
 func newTestScudo(t *testing.T, db *sql.DB) *Scudo {
 	t.Helper()
 
-	s, err := New(db, Options{
+	s, err := New(db, &Options{
 		AccessTokenTTL:    accessTokenTTL,
 		AccessTokenSecret: accessTokenSecret,
 		RefreshTokenTTL:   refreshTokenTTL,
@@ -257,7 +261,7 @@ func TestSignIn_ReturnsError_WhenEmailNotFound(t *testing.T) {
 	sut := newTestScudo(t, db)
 
 	email := uniqueEmail()
-	_, err := sut.Auth.SignIn(context.Background(), email, defaultPassword)
+	_, err := sut.Auth.SignIn(context.Background(), httptest.NewRecorder(), email, defaultPassword)
 	require.ErrorIs(t, err, ErrInvalidCredentials)
 }
 
@@ -269,7 +273,7 @@ func TestSignIn_ReturnsError_WhenPasswordIncorrect(t *testing.T) {
 	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
 	require.NoError(t, err)
 
-	_, err = sut.Auth.SignIn(context.Background(), email, "incorrect-password")
+	_, err = sut.Auth.SignIn(context.Background(), httptest.NewRecorder(), email, "incorrect-password")
 	require.ErrorIs(t, err, ErrInvalidCredentials)
 }
 
@@ -281,7 +285,7 @@ func TestSignIn_ReturnsSignInResponse_WhenDetailsCorrect(t *testing.T) {
 	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
 	require.NoError(t, err)
 
-	r, err := sut.Auth.SignIn(context.Background(), email, defaultPassword)
+	r, err := sut.Auth.SignIn(context.Background(), httptest.NewRecorder(), email, defaultPassword)
 	require.NoError(t, err)
 
 	assert.NotNil(t, r)
@@ -390,7 +394,7 @@ func TestSignIn_IncludesMetadataOnJWTAccessToken_WhenSignedUpWithMetadata(t *tes
 				Data: tc.data,
 			})
 			require.NoError(t, err)
-			r, err := sut.Auth.SignIn(context.Background(), email, defaultPassword)
+			r, err := sut.Auth.SignIn(context.Background(), httptest.NewRecorder(), email, defaultPassword)
 			require.NoError(t, err)
 			require.NotNil(t, r)
 			require.NotEmpty(t, r.AccessToken)
@@ -420,7 +424,7 @@ func TestSignIn_HasCorrectJWTAccessToken_WhenDetailsCorrect(t *testing.T) {
 	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
 	require.NoError(t, err)
 
-	r, err := sut.Auth.SignIn(context.Background(), email, defaultPassword)
+	r, err := sut.Auth.SignIn(context.Background(), httptest.NewRecorder(), email, defaultPassword)
 	require.NoError(t, err)
 
 	assert.NotNil(t, r)
@@ -440,6 +444,27 @@ func TestSignIn_HasCorrectJWTAccessToken_WhenDetailsCorrect(t *testing.T) {
 	assert.Equal(t, u.ID.String(), claims["sub"])
 }
 
+func TestSignIn_SetsCookies_WhenDetailsCorrect(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	email := uniqueEmail()
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	r, err := sut.Auth.SignIn(context.Background(), rr, email, defaultPassword)
+	require.NoError(t, err)
+
+	accessTokenCookie := getCookie(t, rr, AccessTokenCookieKey)
+	assert.NotNil(t, accessTokenCookie)
+	assert.Equal(t, r.AccessToken, accessTokenCookie.Value)
+
+	refreshTokenCookie := getCookie(t, rr, RefreshTokenCookieKey)
+	assert.NotNil(t, refreshTokenCookie)
+	assert.Equal(t, r.RefreshToken, refreshTokenCookie.Value)
+}
+
 func TestSignIn_PersistsRefreshToken_WhenDetailsCorrect(t *testing.T) {
 	db := createTestDatabase(t)
 	sut := newTestScudo(t, db)
@@ -448,7 +473,7 @@ func TestSignIn_PersistsRefreshToken_WhenDetailsCorrect(t *testing.T) {
 	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
 	require.NoError(t, err)
 
-	r, err := sut.Auth.SignIn(context.Background(), email, defaultPassword)
+	r, err := sut.Auth.SignIn(context.Background(), httptest.NewRecorder(), email, defaultPassword)
 	require.NoError(t, err)
 
 	assert.NotNil(t, r)
@@ -463,6 +488,17 @@ func TestSignIn_PersistsRefreshToken_WhenDetailsCorrect(t *testing.T) {
 	err = bcrypt.CompareHashAndPassword([]byte(token.HashedToken), []byte(r.RefreshToken))
 	assert.NoError(t, err, "Expected the hashed refresh token to match")
 	assert.False(t, token.Revoked)
+}
+
+func getCookie(t *testing.T, rr *httptest.ResponseRecorder, name string) *http.Cookie {
+	t.Helper()
+	cookies := rr.Result().Cookies()
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	return nil
 }
 
 func getUserByEmail(t *testing.T, db *sql.DB, email string) repository.ScudoUser {
