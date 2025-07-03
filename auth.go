@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/golang-jwt/jwt/v4"
+	"github.com/google/uuid"
 	"github.com/thisisthemurph/scudo/internal/service"
 	"github.com/thisisthemurph/scudo/internal/token"
 	"golang.org/x/crypto/bcrypt"
@@ -122,4 +124,78 @@ func (a *auth) SignIn(ctx context.Context, w http.ResponseWriter, email, passwor
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 	}, nil
+}
+
+func (a *auth) SignOut(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+	defer func() {
+		// Defer the unsetting of the cookies to ensure they are always unset.
+		unsetCookie(w, AccessTokenCookieKey, a.options.CookieOptions)
+		unsetCookie(w, RefreshTokenCookieKey, a.options.CookieOptions)
+	}()
+
+	accessCookie, err := r.Cookie(AccessTokenCookieKey)
+	if err != nil {
+		return err
+	}
+
+	refreshCookie, err := r.Cookie(RefreshTokenCookieKey)
+	if err != nil {
+		return err
+	}
+
+	accessToken := accessCookie.Value
+	refreshToken := refreshCookie.Value
+	claims, err := a.parseJWTClaims(accessToken)
+	if err != nil {
+		return err
+	}
+
+	userIDValue, ok := claims["sub"].(string)
+	if !ok {
+		return errors.New("sub not found in JWT claims")
+	}
+	userID, err := uuid.Parse(userIDValue)
+	if err != nil {
+		return err
+	}
+
+	rt, err := a.refreshTokenService.GetRefreshToken(ctx, userID, refreshToken)
+	if err != nil {
+		return err
+	}
+
+	return a.refreshTokenService.RevokeRefreshToken(ctx, rt.ID)
+}
+
+func (a *auth) parseJWTClaims(jwtValue string) (jwt.MapClaims, error) {
+	t, err := jwt.Parse(jwtValue, func(token *jwt.Token) (interface{}, error) {
+		return []byte(a.options.AccessTokenSecret), nil
+	})
+	if err != nil {
+		return jwt.MapClaims{}, fmt.Errorf("failed parsing access token: %w", err)
+	}
+
+	if !t.Valid {
+		return jwt.MapClaims{}, fmt.Errorf("invalid access token")
+	}
+
+	mapClaims, ok := t.Claims.(jwt.MapClaims)
+	if !ok {
+		return mapClaims, fmt.Errorf("invalid claims")
+	}
+
+	return mapClaims, nil
+}
+
+func unsetCookie(w http.ResponseWriter, name string, options *CookieOptions) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
+		Value:    "",
+		Path:     options.Path,
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   options.Secure,
+		SameSite: options.SameSite,
+	})
 }

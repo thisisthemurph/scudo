@@ -3,11 +3,15 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"github.com/google/uuid"
 	"github.com/thisisthemurph/scudo/internal/repository"
 	"github.com/thisisthemurph/scudo/internal/token"
+	"golang.org/x/crypto/bcrypt"
 	"time"
 )
+
+var ErrRefreshTokenNotFound = errors.New("refresh token not found")
 
 type RefreshTokenService struct {
 	queries         *repository.Queries
@@ -19,6 +23,24 @@ func NewRefreshTokenService(db *sql.DB, ttl time.Duration) *RefreshTokenService 
 		queries:         repository.New(db),
 		refreshTokenTTL: ttl,
 	}
+}
+
+func (s *RefreshTokenService) GetRefreshToken(ctx context.Context, userID uuid.UUID, token string) (*repository.ScudoRefreshToken, error) {
+	tokens, err := s.queries.GetRefreshTokensByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, t := range tokens {
+		if err := bcrypt.CompareHashAndPassword([]byte(t.HashedToken), []byte(token)); err == nil {
+			if t.Revoked || t.Expired() {
+				continue
+			}
+			return &t, nil
+		}
+	}
+
+	return nil, ErrRefreshTokenNotFound
 }
 
 func (s *RefreshTokenService) RegisterRefreshToken(ctx context.Context, userID uuid.UUID) (string, error) {
@@ -34,4 +56,8 @@ func (s *RefreshTokenService) RegisterRefreshToken(ctx context.Context, userID u
 		ExpiresAt:   time.Now().Add(s.refreshTokenTTL),
 	})
 	return refreshToken, err
+}
+
+func (s *RefreshTokenService) RevokeRefreshToken(ctx context.Context, refreshTokenID int32) error {
+	return s.queries.RevokeRefreshTokenByID(ctx, refreshTokenID)
 }

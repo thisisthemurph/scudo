@@ -490,12 +490,80 @@ func TestSignIn_PersistsRefreshToken_WhenDetailsCorrect(t *testing.T) {
 	assert.False(t, token.Revoked)
 }
 
+func TestSignOut_ReturnsError_WhenUserNotSignedIn(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	email := uniqueEmail()
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/signout", nil)
+	err = sut.Auth.SignOut(context.Background(), rr, req)
+	require.Error(t, err)
+}
+
+func TestSignOut_UnsetsTheCookies(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	email := uniqueEmail()
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	_, err = sut.Auth.SignIn(context.Background(), rr, email, defaultPassword)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/signout", nil)
+	for _, c := range rr.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rr = httptest.NewRecorder()
+	err = sut.Auth.SignOut(context.Background(), rr, req)
+	require.NoError(t, err)
+
+	accessTokenCookie := getCookie(t, rr, AccessTokenCookieKey)
+	assert.Equal(t, "", accessTokenCookie.Value)
+	assert.Equal(t, -1, accessTokenCookie.MaxAge)
+	assert.True(t, accessTokenCookie.Expires.Before(time.Now()), "cookie should be expired")
+}
+
+func TestSignOut_RevokesTheRefreshToken(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	email := uniqueEmail()
+	signupResponse, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	_, err = sut.Auth.SignIn(context.Background(), rr, email, defaultPassword)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/signout", nil)
+	for _, c := range rr.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	err = sut.Auth.SignOut(context.Background(), httptest.NewRecorder(), req)
+	require.NoError(t, err)
+
+	var revoked bool
+	query := "select revoked from scudo.refresh_tokens where user_id = $1;"
+	err = db.QueryRow(query, signupResponse.User.ID).Scan(&revoked)
+	require.NoError(t, err)
+	assert.True(t, revoked)
+}
+
 func getCookie(t *testing.T, rr *httptest.ResponseRecorder, name string) *http.Cookie {
 	t.Helper()
 	cookies := rr.Result().Cookies()
-	for _, cookie := range cookies {
-		if cookie.Name == name {
-			return cookie
+	for i := len(cookies) - 1; i >= 0; i-- {
+		if cookies[i].Name == name {
+			return cookies[i]
 		}
 	}
 	return nil

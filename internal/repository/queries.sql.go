@@ -55,6 +55,41 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (ScudoUs
 	return i, err
 }
 
+const getRefreshTokensByUserID = `-- name: GetRefreshTokensByUserID :many
+select id, user_id, hashed_token, expires_at, revoked, created_at, updated_at from scudo.refresh_tokens where user_id = $1
+`
+
+func (q *Queries) GetRefreshTokensByUserID(ctx context.Context, userID uuid.UUID) ([]ScudoRefreshToken, error) {
+	rows, err := q.db.QueryContext(ctx, getRefreshTokensByUserID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ScudoRefreshToken
+	for rows.Next() {
+		var i ScudoRefreshToken
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.HashedToken,
+			&i.ExpiresAt,
+			&i.Revoked,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getUserByEmail = `-- name: GetUserByEmail :one
 select id, email, hashed_password, metadata, created_at, updated_at from scudo.users where email = $1 limit 1
 `
@@ -89,6 +124,17 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (ScudoUser, err
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const revokeRefreshTokenByID = `-- name: RevokeRefreshTokenByID :exec
+update scudo.refresh_tokens
+set revoked = true
+where id = $1
+`
+
+func (q *Queries) RevokeRefreshTokenByID(ctx context.Context, id int32) error {
+	_, err := q.db.ExecContext(ctx, revokeRefreshTokenByID, id)
+	return err
 }
 
 const userWithEmailExists = `-- name: UserWithEmailExists :one
