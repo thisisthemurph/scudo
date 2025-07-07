@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"time"
+
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/google/uuid"
 	"github.com/thisisthemurph/scudo/internal/service"
 	"github.com/thisisthemurph/scudo/internal/token"
 	"golang.org/x/crypto/bcrypt"
-	"net/http"
-	"time"
 )
 
 const (
@@ -41,6 +42,16 @@ type SignUpOptions struct {
 	Data any
 }
 
+// IsAuthenticated returns true when there is a valid JWT on the http.Request context.
+// If you want to determine the user, use .GetCurrentUser.
+func (a *auth) IsAuthenticated(ctx context.Context, r *http.Request) (bool, error) {
+	_, err := getCurrentUserID(r, a.options.AccessTokenSecret)
+	return err == nil, err
+}
+
+// SignUp creates a user with the given email and password within the scudo.users table.
+// The options.Data provided will be persisted in the database and included on JWTs for that user.
+// A map can be used for the options.Data, but a JSON serializable struct is generally preferred.
 func (a *auth) SignUp(ctx context.Context, email, password string, options *SignUpOptions) (*SignUpResponse, error) {
 	var err error
 	var jsonData []byte
@@ -76,6 +87,7 @@ type SignInResponse struct {
 	RefreshToken string `json:"refreshToken"`
 }
 
+// SignIn authenticates the user with the given email and password and sets a JWT as an HTTP only cookie.
 func (a *auth) SignIn(ctx context.Context, w http.ResponseWriter, email, password string) (*SignInResponse, error) {
 	user, err := a.userService.GetUserByEmail(ctx, email)
 	if err != nil {
@@ -126,6 +138,7 @@ func (a *auth) SignIn(ctx context.Context, w http.ResponseWriter, email, passwor
 	}, nil
 }
 
+// SignOut performs the required signout operations for the user associated with the JWT on the http.Request context.
 func (a *auth) SignOut(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 	defer func() {
 		// Defer the unsetting of the cookies to ensure they are always unset.
@@ -133,33 +146,17 @@ func (a *auth) SignOut(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		unsetCookie(w, RefreshTokenCookieKey, a.options.CookieOptions)
 	}()
 
-	accessCookie, err := r.Cookie(AccessTokenCookieKey)
-	if err != nil {
-		return err
-	}
-
 	refreshCookie, err := r.Cookie(RefreshTokenCookieKey)
 	if err != nil {
 		return err
 	}
 
-	accessToken := accessCookie.Value
-	refreshToken := refreshCookie.Value
-	claims, err := a.parseJWTClaims(accessToken)
+	userID, err := getCurrentUserID(r, a.options.AccessTokenSecret)
 	if err != nil {
 		return err
 	}
 
-	userIDValue, ok := claims["sub"].(string)
-	if !ok {
-		return errors.New("sub not found in JWT claims")
-	}
-	userID, err := uuid.Parse(userIDValue)
-	if err != nil {
-		return err
-	}
-
-	rt, err := a.refreshTokenService.GetRefreshToken(ctx, userID, refreshToken)
+	rt, err := a.refreshTokenService.GetRefreshToken(ctx, userID, refreshCookie.Value)
 	if err != nil {
 		return err
 	}
@@ -167,21 +164,44 @@ func (a *auth) SignOut(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	return a.refreshTokenService.RevokeRefreshToken(ctx, rt.ID)
 }
 
-func (a *auth) parseJWTClaims(jwtValue string) (jwt.MapClaims, error) {
+func getCurrentUserID(r *http.Request, secret string) (uuid.UUID, error) {
+	accessCookie, err := r.Cookie(AccessTokenCookieKey)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("jwt: failed to get access cookie: %w", err)
+	}
+
+	claims, err := parseJWTClaims(accessCookie.Value, secret)
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	sub, ok := claims["sub"].(string)
+	if !ok {
+		return uuid.Nil, fmt.Errorf("jwt: failed to parse sub: %w", err)
+	}
+	userID, err := uuid.Parse(sub)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("jwt: failed to parse user ID: %w", err)
+	}
+
+	return userID, nil
+}
+
+func parseJWTClaims(jwtValue, secret string) (jwt.MapClaims, error) {
 	t, err := jwt.Parse(jwtValue, func(token *jwt.Token) (interface{}, error) {
-		return []byte(a.options.AccessTokenSecret), nil
+		return []byte(secret), nil
 	})
 	if err != nil {
-		return jwt.MapClaims{}, fmt.Errorf("failed parsing access token: %w", err)
+		return jwt.MapClaims{}, fmt.Errorf("jwt: failed parsing access token: %w", err)
 	}
 
 	if !t.Valid {
-		return jwt.MapClaims{}, fmt.Errorf("invalid access token")
+		return jwt.MapClaims{}, fmt.Errorf("jwt: invalid access token")
 	}
 
 	mapClaims, ok := t.Claims.(jwt.MapClaims)
 	if !ok {
-		return mapClaims, fmt.Errorf("invalid claims")
+		return mapClaims, fmt.Errorf("jwt: invalid claims")
 	}
 
 	return mapClaims, nil

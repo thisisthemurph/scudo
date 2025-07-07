@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/google/uuid"
 	"github.com/thisisthemurph/scudo/internal/service"
+	"net/http"
 )
 
 var (
@@ -23,7 +24,8 @@ func newUser(us *service.UserService, options *Options) *user {
 	}
 }
 
-func (u *user) GetByID(ctx context.Context, id uuid.UUID) (User, error) {
+// GetUserByID returns the user associated with the given id.
+func (u *user) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 	usr, err := u.userService.GetUserByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, service.ErrUserNotFound) {
@@ -33,4 +35,14 @@ func (u *user) GetByID(ctx context.Context, id uuid.UUID) (User, error) {
 	}
 
 	return NewUserDTO(usr), nil
+}
+
+// GetCurrentUser returns the current user associated with the JWT present on the http.Request context.
+func (u *user) GetCurrentUser(ctx context.Context, r *http.Request) (User, error) {
+	userID, err := getCurrentUserID(r, u.options.AccessTokenSecret)
+	if err != nil {
+		return User{}, err
+	}
+
+	return u.GetUserByID(ctx, userID)
 }
