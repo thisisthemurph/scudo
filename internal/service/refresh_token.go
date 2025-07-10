@@ -4,14 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/thisisthemurph/scudo/internal/repository"
 	"github.com/thisisthemurph/scudo/internal/token"
 	"golang.org/x/crypto/bcrypt"
-	"time"
 )
 
 var ErrRefreshTokenNotFound = errors.New("refresh token not found")
+var ErrRefreshTokenRevoked = errors.New("refresh token revoked")
+var ErrRefreshTokenExpired = errors.New("refresh token expired")
 
 type RefreshTokenService struct {
 	queries         *repository.Queries
@@ -33,8 +36,11 @@ func (s *RefreshTokenService) GetRefreshToken(ctx context.Context, userID uuid.U
 
 	for _, t := range tokens {
 		if err := bcrypt.CompareHashAndPassword([]byte(t.HashedToken), []byte(token)); err == nil {
-			if t.Revoked || t.Expired() {
-				continue
+			if t.Revoked {
+				return &t, ErrRefreshTokenRevoked
+			}
+			if t.Expired() {
+				return &t, ErrRefreshTokenExpired
 			}
 			return &t, nil
 		}

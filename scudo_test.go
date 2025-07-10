@@ -5,17 +5,18 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"testing"
+	"time"
+
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/thisisthemurph/scudo/internal/repository"
 	"golang.org/x/crypto/bcrypt"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"testing"
-	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -576,4 +577,349 @@ func getUserByEmail(t *testing.T, db *sql.DB, email string) repository.ScudoUser
 	u, err := r.GetUserByEmail(context.Background(), email)
 	require.NoError(t, err)
 	return u
+}
+
+func TestRefreshToken_ReturnsError_WhenRefreshTokenNotFound(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	email := uniqueEmail()
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	_, err = sut.Auth.SignIn(context.Background(), rr, email, defaultPassword)
+	require.NoError(t, err)
+
+	// Create request without refresh token cookie
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	// Only add access token cookie, not refresh token
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == AccessTokenCookieKey {
+			req.AddCookie(c)
+		}
+	}
+
+	rr = httptest.NewRecorder()
+	_, err = sut.Auth.RefreshToken(context.Background(), rr, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refresh token not found")
+}
+
+func TestRefreshToken_ReturnsError_WhenAccessTokenMissing(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	email := uniqueEmail()
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
+	require.NoError(t, err)
+
+	// Sign in to get tokens
+	rr := httptest.NewRecorder()
+	_, err = sut.Auth.SignIn(context.Background(), rr, email, defaultPassword)
+	require.NoError(t, err)
+
+	// Create request without access token cookie
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	// Only add refresh token cookie, not access token
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == RefreshTokenCookieKey {
+			req.AddCookie(c)
+		}
+	}
+
+	rr = httptest.NewRecorder()
+	_, err = sut.Auth.RefreshToken(context.Background(), rr, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unable to determine user from access token")
+}
+
+func TestRefreshToken_ReturnsError_WhenRefreshTokenInvalid(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	email := uniqueEmail()
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
+	require.NoError(t, err)
+
+	// Sign in to get tokens
+	rr := httptest.NewRecorder()
+	_, err = sut.Auth.SignIn(context.Background(), rr, email, defaultPassword)
+	require.NoError(t, err)
+
+	// Create request with invalid refresh token
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == AccessTokenCookieKey {
+			req.AddCookie(c)
+		}
+	}
+	// Add invalid refresh token
+	req.AddCookie(&http.Cookie{
+		Name:  RefreshTokenCookieKey,
+		Value: "invalid_refresh_token",
+	})
+
+	rr = httptest.NewRecorder()
+	_, err = sut.Auth.RefreshToken(context.Background(), rr, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid refresh token")
+}
+
+func TestRefreshToken_ReturnsError_WhenRefreshTokenRevoked(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	email := uniqueEmail()
+	signupResponse, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
+	require.NoError(t, err)
+
+	// Sign in to get tokens
+	rr := httptest.NewRecorder()
+	_, err = sut.Auth.SignIn(context.Background(), rr, email, defaultPassword)
+	require.NoError(t, err)
+
+	// Revoke the refresh token
+	_, err = db.Exec("UPDATE scudo.refresh_tokens SET revoked = true WHERE user_id = $1", signupResponse.User.ID)
+	require.NoError(t, err)
+
+	// Try to refresh with revoked token
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	for _, c := range rr.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rr = httptest.NewRecorder()
+	_, err = sut.Auth.RefreshToken(context.Background(), rr, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid refresh token")
+}
+
+func TestRefreshToken_ReturnsSignInResponse_WhenTokensValid(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	email := uniqueEmail()
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
+	require.NoError(t, err)
+
+	// Sign in to get tokens
+	rr := httptest.NewRecorder()
+	signinResponse, err := sut.Auth.SignIn(context.Background(), rr, email, defaultPassword)
+	require.NoError(t, err)
+
+	// Create refresh request
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	for _, c := range rr.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	// Wait a bit to ensure new token has different timestamp
+	time.Sleep(100 * time.Millisecond)
+
+	rr = httptest.NewRecorder()
+	refreshResponse, err := sut.Auth.RefreshToken(context.Background(), rr, req)
+	require.NoError(t, err)
+	require.NotNil(t, refreshResponse)
+
+	// Verify response structure
+	assert.Equal(t, signinResponse.User.ID, refreshResponse.User.ID)
+	assert.Equal(t, signinResponse.User.Email, refreshResponse.User.Email)
+	assert.NotEmpty(t, refreshResponse.AccessToken)
+	assert.NotEmpty(t, refreshResponse.RefreshToken)
+
+	// Verify new tokens are different from old ones
+	assert.NotEqual(t, signinResponse.AccessToken, refreshResponse.AccessToken)
+	assert.NotEqual(t, signinResponse.RefreshToken, refreshResponse.RefreshToken)
+}
+
+func TestRefreshToken_SetsCookies_WhenTokensValid(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	email := uniqueEmail()
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
+	require.NoError(t, err)
+
+	// Sign in to get tokens
+	rr := httptest.NewRecorder()
+	_, err = sut.Auth.SignIn(context.Background(), rr, email, defaultPassword)
+	require.NoError(t, err)
+
+	// Create refresh request
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	for _, c := range rr.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rr = httptest.NewRecorder()
+	refreshResponse, err := sut.Auth.RefreshToken(context.Background(), rr, req)
+	require.NoError(t, err)
+
+	// Verify cookies are set
+	accessTokenCookie := getCookie(t, rr, AccessTokenCookieKey)
+	assert.NotNil(t, accessTokenCookie)
+	assert.Equal(t, refreshResponse.AccessToken, accessTokenCookie.Value)
+	assert.True(t, accessTokenCookie.HttpOnly)
+
+	refreshTokenCookie := getCookie(t, rr, RefreshTokenCookieKey)
+	assert.NotNil(t, refreshTokenCookie)
+	assert.Equal(t, refreshResponse.RefreshToken, refreshTokenCookie.Value)
+	assert.True(t, refreshTokenCookie.HttpOnly)
+}
+
+func TestRefreshToken_RotatesRefreshToken_WhenTokensValid(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	email := uniqueEmail()
+	signupResponse, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
+	require.NoError(t, err)
+
+	// Sign in to get tokens
+	rr := httptest.NewRecorder()
+	signinResponse, err := sut.Auth.SignIn(context.Background(), rr, email, defaultPassword)
+	require.NoError(t, err)
+
+	// Get initial refresh token count
+	var initialCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM scudo.refresh_tokens WHERE user_id = $1", signupResponse.User.ID).Scan(&initialCount)
+	require.NoError(t, err)
+
+	// Create refresh request
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	for _, c := range rr.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rr = httptest.NewRecorder()
+	refreshResponse, err := sut.Auth.RefreshToken(context.Background(), rr, req)
+	require.NoError(t, err)
+
+	// Verify new refresh token was created
+	var newCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM scudo.refresh_tokens WHERE user_id = $1", signupResponse.User.ID).Scan(&newCount)
+	require.NoError(t, err)
+	assert.Equal(t, initialCount+1, newCount)
+
+	// Verify old refresh token is revoked
+	var revokedCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM scudo.refresh_tokens WHERE user_id = $1 AND revoked = true", signupResponse.User.ID).Scan(&revokedCount)
+	require.NoError(t, err)
+	assert.Equal(t, 1, revokedCount)
+
+	// Verify new refresh token is valid
+	var validCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM scudo.refresh_tokens WHERE user_id = $1 AND revoked = false", signupResponse.User.ID).Scan(&validCount)
+	require.NoError(t, err)
+	assert.Equal(t, 1, validCount)
+
+	// Verify old refresh token can't be used again
+	req = httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  AccessTokenCookieKey,
+		Value: refreshResponse.AccessToken,
+	})
+	req.AddCookie(&http.Cookie{
+		Name:  RefreshTokenCookieKey,
+		Value: signinResponse.RefreshToken, // Use old refresh token
+	})
+
+	rr = httptest.NewRecorder()
+	_, err = sut.Auth.RefreshToken(context.Background(), rr, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid refresh token")
+}
+
+func TestRefreshToken_WorksWithExpiredAccessToken(t *testing.T) {
+	db := createTestDatabase(t)
+	// Create scudo with very short access token TTL
+	sut, err := New(db, &Options{
+		AccessTokenTTL:    100 * time.Millisecond, // Very short TTL
+		AccessTokenSecret: accessTokenSecret,
+		RefreshTokenTTL:   refreshTokenTTL,
+	})
+	require.NoError(t, err)
+	resetDatabase(t, db)
+
+	email := uniqueEmail()
+	_, err = sut.Auth.SignUp(context.Background(), email, defaultPassword, nil)
+	require.NoError(t, err)
+
+	// Sign in to get tokens
+	rr := httptest.NewRecorder()
+	_, err = sut.Auth.SignIn(context.Background(), rr, email, defaultPassword)
+	require.NoError(t, err)
+
+	// Wait for access token to expire
+	time.Sleep(200 * time.Millisecond)
+
+	// Create refresh request with expired access token
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	for _, c := range rr.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rr = httptest.NewRecorder()
+	refreshResponse, err := sut.Auth.RefreshToken(context.Background(), rr, req)
+	require.NoError(t, err)
+	require.NotNil(t, refreshResponse)
+
+	// Verify we got a new valid access token
+	assert.NotEmpty(t, refreshResponse.AccessToken)
+	assert.NotEmpty(t, refreshResponse.RefreshToken)
+
+	// Verify new access token is valid
+	token, err := jwt.Parse(refreshResponse.AccessToken, func(t *jwt.Token) (interface{}, error) {
+		return []byte(accessTokenSecret), nil
+	})
+	require.NoError(t, err)
+	assert.True(t, token.Valid)
+}
+
+func TestRefreshToken_GeneratesValidJWT_WhenTokensValid(t *testing.T) {
+	db := createTestDatabase(t)
+	sut := newTestScudo(t, db)
+
+	email := uniqueEmail()
+	_, err := sut.Auth.SignUp(context.Background(), email, defaultPassword, &SignUpOptions{
+		Data: map[string]any{
+			"name": "Test User",
+			"role": "user",
+		},
+	})
+	require.NoError(t, err)
+
+	// Sign in to get tokens
+	rr := httptest.NewRecorder()
+	_, err = sut.Auth.SignIn(context.Background(), rr, email, defaultPassword)
+	require.NoError(t, err)
+
+	// Create refresh request
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	for _, c := range rr.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	rr = httptest.NewRecorder()
+	refreshResponse, err := sut.Auth.RefreshToken(context.Background(), rr, req)
+	require.NoError(t, err)
+
+	// Parse and verify the new JWT
+	token, err := jwt.ParseWithClaims(refreshResponse.AccessToken, jwt.MapClaims{}, func(token *jwt.Token) (interface{}, error) {
+		return []byte(accessTokenSecret), nil
+	})
+	require.NoError(t, err)
+	require.True(t, token.Valid)
+
+	claims := token.Claims.(jwt.MapClaims)
+	assert.Equal(t, email, claims["email"])
+	assert.Equal(t, refreshResponse.User.ID.String(), claims["sub"])
+	assert.NotEmpty(t, claims["iat"])
+	assert.NotEmpty(t, claims["exp"])
+
+	// Verify metadata is included
+	metadata := claims["metadata"].(map[string]interface{})
+	assert.Equal(t, "Test User", metadata["name"])
+	assert.Equal(t, "user", metadata["role"])
 }

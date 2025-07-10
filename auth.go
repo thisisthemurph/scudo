@@ -164,6 +164,98 @@ func (a *auth) SignOut(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	return a.refreshTokenService.RevokeRefreshToken(ctx, rt.ID)
 }
 
+// RefreshToken generates a new access token using the refresh token from the request.
+// It implements refresh token rotation by issuing a new refresh token and revoking the old one.
+func (a *auth) RefreshToken(ctx context.Context, w http.ResponseWriter, r *http.Request) (*SignInResponse, error) {
+	refreshCookie, err := r.Cookie(RefreshTokenCookieKey)
+	if err != nil {
+		return nil, fmt.Errorf("refresh token not found: %w", err)
+	}
+
+	userID, err := unsafeGetCurrentUserID(r, a.options.AccessTokenSecret)
+	if err != nil {
+		return nil, fmt.Errorf("unable to determine user from access token: %w", err)
+	}
+
+	// Validate refresh token and get the token record
+	rt, err := a.refreshTokenService.GetRefreshToken(ctx, userID, refreshCookie.Value)
+	if err != nil {
+		if errors.Is(err, service.ErrRefreshTokenNotFound) {
+			return nil, fmt.Errorf("invalid refresh token")
+		}
+		return nil, err
+	}
+
+	user, err := a.userService.GetUserByID(ctx, rt.UserID)
+	if err != nil {
+		return nil, err
+	}
+
+	accessToken, err := token.GenerateJWT(user, a.options.AccessTokenTTL, a.options.AccessTokenSecret)
+	if err != nil {
+		return nil, err
+	}
+
+	newRefreshToken, err := a.refreshTokenService.RegisterRefreshToken(ctx, user.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Revoke the old refresh token
+	if err := a.refreshTokenService.RevokeRefreshToken(ctx, rt.ID); err != nil {
+		// Log this error but don't fail the request
+	}
+
+	// Set new cookies
+	http.SetCookie(w, &http.Cookie{
+		Name:     AccessTokenCookieKey,
+		Value:    accessToken,
+		Path:     a.options.CookieOptions.Path,
+		Expires:  time.Now().Add(a.options.AccessTokenTTL),
+		HttpOnly: true,
+		Secure:   a.options.CookieOptions.Secure,
+		SameSite: a.options.CookieOptions.SameSite,
+	})
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     RefreshTokenCookieKey,
+		Value:    newRefreshToken,
+		Path:     a.options.CookieOptions.Path,
+		Expires:  time.Now().Add(a.options.RefreshTokenTTL),
+		HttpOnly: true,
+		Secure:   a.options.CookieOptions.Secure,
+		SameSite: a.options.CookieOptions.SameSite,
+	})
+
+	return &SignInResponse{
+		User:         NewUserDTO(user),
+		AccessToken:  accessToken,
+		RefreshToken: newRefreshToken,
+	}, nil
+}
+
+func parseJWTClaims(jwtValue, secret string) (jwt.MapClaims, error) {
+	t, err := jwt.Parse(jwtValue, func(token *jwt.Token) (interface{}, error) {
+		return []byte(secret), nil
+	})
+	if err != nil {
+		return jwt.MapClaims{}, fmt.Errorf("jwt: failed parsing access token: %w", err)
+	}
+
+	if !t.Valid {
+		return jwt.MapClaims{}, fmt.Errorf("jwt: invalid access token")
+	}
+
+	mapClaims, ok := t.Claims.(jwt.MapClaims)
+	if !ok {
+		return mapClaims, fmt.Errorf("jwt: invalid claims")
+	}
+
+	return mapClaims, nil
+}
+
+// getCurrentUserID extracts the user ID from the access token on the http.Request context.
+// It will return an error if the access token is invalid or expired.
 func getCurrentUserID(r *http.Request, secret string) (uuid.UUID, error) {
 	accessCookie, err := r.Cookie(AccessTokenCookieKey)
 	if err != nil {
@@ -187,24 +279,47 @@ func getCurrentUserID(r *http.Request, secret string) (uuid.UUID, error) {
 	return userID, nil
 }
 
-func parseJWTClaims(jwtValue, secret string) (jwt.MapClaims, error) {
-	t, err := jwt.Parse(jwtValue, func(token *jwt.Token) (interface{}, error) {
+// unsafeGetCurrentUserID extracts the user ID from a JWT token without validating expiration.
+// This is useful for refresh token flows where the access token may be expired
+func unsafeGetCurrentUserID(r *http.Request, secret string) (uuid.UUID, error) {
+	accessCookie, err := r.Cookie(AccessTokenCookieKey)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("jwt: failed to get access cookie: %w", err)
+	}
+
+	// Parse the token with custom claims, ignoring expiration validation
+	token, err := jwt.ParseWithClaims(accessCookie.Value, &jwt.MapClaims{}, func(token *jwt.Token) (interface{}, error) {
 		return []byte(secret), nil
 	})
+
 	if err != nil {
-		return jwt.MapClaims{}, fmt.Errorf("jwt: failed parsing access token: %w", err)
+		if ve, ok := err.(*jwt.ValidationError); ok {
+			if ve.Errors&jwt.ValidationErrorExpired != 0 {
+				// Token is expired but we can still extract claims if it's otherwise valid
+			} else {
+				return uuid.Nil, fmt.Errorf("jwt: failed parsing access token: %w", err)
+			}
+		} else {
+			return uuid.Nil, fmt.Errorf("jwt: failed parsing access token: %w", err)
+		}
 	}
 
-	if !t.Valid {
-		return jwt.MapClaims{}, fmt.Errorf("jwt: invalid access token")
-	}
-
-	mapClaims, ok := t.Claims.(jwt.MapClaims)
+	mapClaims, ok := token.Claims.(*jwt.MapClaims)
 	if !ok {
-		return mapClaims, fmt.Errorf("jwt: invalid claims")
+		return uuid.Nil, fmt.Errorf("jwt: invalid claims")
 	}
 
-	return mapClaims, nil
+	sub, ok := (*mapClaims)["sub"].(string)
+	if !ok {
+		return uuid.Nil, fmt.Errorf("jwt: failed to parse sub")
+	}
+
+	userID, err := uuid.Parse(sub)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("jwt: failed to parse user ID: %w", err)
+	}
+
+	return userID, nil
 }
 
 func unsetCookie(w http.ResponseWriter, name string, options *CookieOptions) {
